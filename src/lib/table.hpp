@@ -5,9 +5,11 @@
 #include <exception>
 #include <iostream>
 #include <optional>
+#include <utility>
 
 #include "src/lib/item.hpp"
 #include "src/lib/hash.hpp"
+#include "src/lib/prime.hpp"
 
 namespace slowhash
 {
@@ -17,6 +19,13 @@ namespace slowhash
   // Provide typedefs like key_type, value_type, etc. that are provided in std::map
   struct hash_table {
   private:
+    /// Load factors used to determine whether we should expand or contract the table
+    // TODO: should these be parametrizeable?
+    const std::size_t resize_up_load_factor = 70;
+    const std::size_t resize_down_load_factor = 10;
+
+    std::size_t base_size;
+
     /// The capacity of the hash table - how many buckets
     // TODO: rename this to capacity
     std::size_t size;
@@ -34,9 +43,15 @@ namespace slowhash
 
     // sentinel node to use to refer to deleted key/value pairs in the table
     table_item *deleted_sentinel;
+  public:
+    // Public constants
+
+    /// Minimum size that the hash table can be
+    static const std::size_t MIN_SIZE = 2;
 
     // Constructors/Destructors
-  public:
+
+    // Construct a hash table with the default capacity
     hash_table()
     : size(53),
       count(0)
@@ -44,6 +59,27 @@ namespace slowhash
       // Allocate an array of points to table_item objects
       // TODO: simplify
       items = static_cast<table_item**>(std::calloc(this->size, sizeof(table_item*)));
+
+      // ASCII character set size is 128 - 131 is the next largest prime after that
+      hasher.prime_a = 131;
+      // 137 is the next largest prime after 131.
+      hasher.prime_b = 137;
+
+      // num_buckets is the size of the current table
+      hasher.num_buckets = size;
+
+      // initialize deleted_sentinel
+      deleted_sentinel = new table_item("", "");
+    }
+
+    // Construct a hash table with at least the given capacity
+    hash_table(std::size_t base_size)
+    : base_size(base_size),
+      count(0)
+    {
+      size = next_prime(base_size);
+
+      items = static_cast<table_item**>(std::calloc(size, sizeof(table_item*)));
 
       // ASCII character set size is 128 - 131 is the next largest prime after that
       hasher.prime_a = 131;
@@ -69,6 +105,8 @@ namespace slowhash
         }
       }
       std::free(this->items);
+
+      // TODO: use unique_ptr instead?
       delete deleted_sentinel;
     }
 
@@ -81,9 +119,17 @@ namespace slowhash
       return this->count;
     }
 
+    std::size_t get_current_load_factor() const {
+      return this->count * 100 / this->size;
+    }
+
     // Modifiers
 
     void insert(const std::string& key, const std::string& value) {
+      // Check against load factor to see if we should expand
+      if (get_current_load_factor() > resize_up_load_factor) {
+        resize_up(*this);
+      }
       // Iterate through indexes until we find an empty bucket.
       // Insert the item into that bucket and increment the count member variable.
       auto item = new table_item(key, value);
@@ -122,6 +168,10 @@ namespace slowhash
     }
 
     void remove(const std::string& key) {
+      // Check against load factor to see if we should contract
+      if (get_current_load_factor() < resize_down_load_factor) {
+        resize_down(*this);
+      }
       // Item that we want to delete may be part of a collision chain.
       // Removing it from the table will break that chain, and will make
       // finding items in the tail of the chain impossible. Instead we simply
@@ -148,7 +198,58 @@ namespace slowhash
     friend std::ostream& operator<<(std::ostream& stream, const hash_table& table) {
       return stream;
     }
+
+    // external modifiers
+    // TODO: is there a better way to implement this?
+    friend void resize(hash_table& table, std::size_t new_size);
+
+    friend void resize_up(hash_table& table);
+
+    friend void resize_down(hash_table& table);
   };
+
+  // external modifiers
+    void resize(hash_table& table, std::size_t new_size) {
+      if (new_size < hash_table::MIN_SIZE) {
+        return;
+      }
+
+      // Construct a new hash table with the given size
+      // Insert all the current table's items into it
+      // Swap out internal buffers and let the destructor do the trick of
+      // cleaning up after.
+      hash_table temp(new_size);
+      table_item *curr_item;
+      for (auto i = 0; i < table.get_size(); ++i) {
+        curr_item = table.items[i];
+        if (curr_item != nullptr && curr_item != table.deleted_sentinel) {
+          temp.insert(curr_item->key, curr_item->value);
+        }
+      }
+
+      table.base_size = temp.base_size;
+      table.count = temp.count;
+
+      // Swap out sizes so that the destructor runs correctly
+      const auto tmp_size = table.size;
+      table.size = temp.size;
+      temp.size = tmp_size;
+
+      // Swap out item buffer
+      auto tmp_items = table.items;
+      table.items = temp.items;
+      temp.items = tmp_items;
+    }
+
+    void resize_up(hash_table& table) {
+      const auto new_size = table.base_size * 2;
+      resize(table, new_size);
+    }
+
+    void resize_down(hash_table& table) {
+      const auto new_size = table.base_size / 2;
+      resize(table, new_size);
+    }
 } // namespace slowhash
 
 #endif
