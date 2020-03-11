@@ -2,12 +2,30 @@
 #define SLOWHASH_TABLE_HPP
 
 #include <cstdlib>
+#include <exception>
+#include <iostream>
 
 #include "src/lib/item.hpp"
 #include "src/lib/hash.hpp"
 
 namespace slowhash
 {
+  namespace exceptions {
+    class key_not_found : public std::runtime_error {
+      std::string message;
+    public:
+      key_not_found(const char *message) noexcept
+      : std::runtime_error(message),
+        message(message)
+      {
+      }
+
+      const char* what() const throw() {
+        return this->message.c_str();
+      }
+    };
+  } // namespace exceptions
+
   struct hash_table {
     /// The capacity of the hash table - how many buckets
     size_t size;
@@ -56,25 +74,47 @@ namespace slowhash
     // Modifiers
 
     void insert(const std::string& key, const std::string& value) {
+      // Iterate through indexes until we find an empty bucket.
+      // Insert the item into that bucket and increment the count member variable.
       auto item = new table_item(key, value);
-      auto index = this->hasher(item->key, 0);
-      auto curr_item = this->items[index];
-      auto i = 1;
-      while (curr_item != nullptr) {
+      slowhash::table_item *curr_item;
+      std::size_t index;
+      auto i = 0;
+      do {
         index = this->hasher(item->key, i);
         curr_item = this->items[index];
         ++i;
-      }
+      } while (curr_item != nullptr);
       this->items[index] = item;
       this->count++;
     }
 
     const std::string& search(const std::string& key) {
-      return "";
+      auto i = 0;
+      slowhash::table_item *item;
+      std::size_t index;
+      do {
+        index = this->hasher(key, i);
+        item = this->items[index];
+        if (item->key == key) {
+          return item->value;
+        }
+        ++i;
+      } while (item != nullptr);
+
+      // TODO: need to make a decision, either use exceptions or std::optional
+      throw exceptions::key_not_found(("Could not find key: " + key + " in the hash table").c_str());
     }
 
     void remove(const std::string& key) {
 
+    }
+
+    // utility
+
+    // TODO: implement for ease of printing and debugging
+    friend std::ostream& operator<<(std::ostream& stream, const hash_table& table) {
+      return stream;
     }
   };
 } // namespace slowhash
