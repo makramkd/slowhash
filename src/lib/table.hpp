@@ -4,44 +4,39 @@
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <optional>
 
 #include "src/lib/item.hpp"
 #include "src/lib/hash.hpp"
 
 namespace slowhash
 {
-  namespace exceptions {
-    class key_not_found : public std::runtime_error {
-      std::string message;
-    public:
-      key_not_found(const char *message) noexcept
-      : std::runtime_error(message),
-        message(message)
-      {
-      }
-
-      const char* what() const throw() {
-        return this->message.c_str();
-      }
-    };
-  } // namespace exceptions
-
+  // TODO:
+  // Template on key type and value type
+  // Template on given hasher
+  // Provide typedefs like key_type, value_type, etc. that are provided in std::map
   struct hash_table {
+  private:
     /// The capacity of the hash table - how many buckets
-    size_t size;
+    // TODO: rename this to capacity
+    std::size_t size;
 
     /// How many items are currently stored in the table
-    size_t count;
+    // TODO: rename this to size
+    std::size_t count;
 
     /// The table itself
-    // TODO: use std::vector instead
+    // TODO: use std::vector<std::unique_ptr> instead
     table_item **items;
 
     /// Hasher function object
     string_hasher hasher;
 
-    // Constructors/Destructors
+    // sentinel node to use to refer to deleted key/value pairs in the table
+    table_item *deleted_sentinel;
 
+    // Constructors/Destructors
+  public:
     hash_table()
     : size(53),
       count(0)
@@ -57,6 +52,9 @@ namespace slowhash
 
       // num_buckets is the size of the current table
       hasher.num_buckets = size;
+
+      // initialize deleted_sentinel
+      deleted_sentinel = new table_item("", "");
     }
 
     // Destructor: free items array
@@ -64,11 +62,23 @@ namespace slowhash
     {
       for (int i = 0; i < this->size; ++i) {
         auto item = this->items[i];
-        if (item != nullptr) {
+        // NOTE: should not delete the sentinel using std::free()
+        // since it was allocated using new()
+        if (item != nullptr && item != this->deleted_sentinel) {
           std::free(item);
         }
       }
       std::free(this->items);
+      delete deleted_sentinel;
+    }
+
+    // Accessors
+    std::size_t get_size() const {
+      return this->size;
+    }
+
+    std::size_t get_count() const {
+      return this->count;
     }
 
     // Modifiers
@@ -77,37 +87,59 @@ namespace slowhash
       // Iterate through indexes until we find an empty bucket.
       // Insert the item into that bucket and increment the count member variable.
       auto item = new table_item(key, value);
-      slowhash::table_item *curr_item;
-      std::size_t index;
-      auto i = 0;
-      do {
-        index = this->hasher(item->key, i);
+      auto index = this->hasher(key, 0);
+      auto curr_item = this->items[index];
+      auto i = 1;
+      while (curr_item != nullptr) {
+        // Overwriting existing keys with new values
+        if (curr_item != deleted_sentinel && curr_item->key == key) {
+          delete curr_item;
+          this->items[index] = item;
+          return;
+        }
+        index = this->hasher(key, i);
         curr_item = this->items[index];
         ++i;
-      } while (curr_item != nullptr);
+      }
       this->items[index] = item;
       this->count++;
     }
 
-    const std::string& search(const std::string& key) {
-      auto i = 0;
-      slowhash::table_item *item;
-      std::size_t index;
-      do {
-        index = this->hasher(key, i);
-        item = this->items[index];
-        if (item->key == key) {
-          return item->value;
+    std::optional<std::string> search(const std::string& key) {
+      auto index = this->hasher(key, 0);
+      auto curr_item = this->items[index];
+      auto i = 1;
+      while (curr_item != nullptr) {
+        if (curr_item != deleted_sentinel && curr_item->key == key) {
+          return curr_item->value;
         }
+        index = this->hasher(key, i);
+        curr_item = this->items[index];
         ++i;
-      } while (item != nullptr);
+      }
 
-      // TODO: need to make a decision, either use exceptions or std::optional
-      throw exceptions::key_not_found(("Could not find key: " + key + " in the hash table").c_str());
+      return {};
     }
 
     void remove(const std::string& key) {
-
+      // Item that we want to delete may be part of a collision chain.
+      // Removing it from the table will break that chain, and will make
+      // finding items in the tail of the chain impossible. Instead we simply
+      // mark those items as deleted.
+      auto index = this->hasher(key, 0);
+      auto curr_item = this->items[index];
+      auto i = 1;
+      while (curr_item != nullptr) {
+        if (curr_item != deleted_sentinel && curr_item->key == key) {
+          delete curr_item;
+          this->items[index] = deleted_sentinel;
+          // TODO: add return here?
+        }
+        index = this->hasher(key, i);
+        curr_item = this->items[index];
+        ++i;
+      }
+      this->count--;
     }
 
     // utility
